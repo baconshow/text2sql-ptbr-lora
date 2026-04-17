@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Training artifacts
+runs/
+checkpoints/
+wandb/
+*.safetensors
+!assets/*.safetensors
+
+# HF cache
+.cache/
+~/.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Data (generated deterministically by data_prep.py)
+data/*.jsonl

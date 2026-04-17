@@ -1,0 +1,19 @@
+# Base run — reference configuration.
+run_name: base
+
+model_name: Qwen/Qwen2.5-0.5B-Instruct
+use_4bit: true
+
+# LoRA
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+# Training
+num_epochs: 3
+batch_size: 4
+grad_accum_steps: 4        # effective batch = 16
+learning_rate: 2.0e-4
+lr_scheduler: cosine
+warmup_ratio: 0.03

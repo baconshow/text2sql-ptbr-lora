@@ -1,0 +1,17 @@
+# Ablation — higher learning rate (tests stability / convergence speed).
+run_name: lr_high
+
+model_name: Qwen/Qwen2.5-0.5B-Instruct
+use_4bit: true
+
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+num_epochs: 3
+batch_size: 4
+grad_accum_steps: 4
+learning_rate: 5.0e-4
+lr_scheduler: cosine
+warmup_ratio: 0.03
