@@ -6,14 +6,13 @@ Metrics
 -------
   exact_match     : normalized SQL string match (stripped, lowercased)
   token_f1        : token-level F1 vs. gold SQL (tolerates minor differences)
-  exec_accuracy   : execution accuracy via in-memory SQLite with a fake schema.
-                    Because the synthetic data uses made-up tables, we only
-                    execute queries where we can build a matching in-memory
-                    schema. Fallback: `valid_sql` = the SQL parses without error.
+  valid_sql       : the SQL compiles in SQLite against the example's own schema
 
 Usage:
     python src/evaluate.py --adapter runs/base --data data/test.jsonl \
                            --base_model Qwen/Qwen2.5-0.5B-Instruct
+
+Leave out --adapter to score the base model; results go to runs/baseline.
 """
 from __future__ import annotations
 
@@ -24,9 +23,8 @@ import sqlite3
 from collections import Counter
 from pathlib import Path
 
-import torch
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+SCHEMA_PATTERN = re.compile(r"### Schema:\n(.*?)\n\n### Pergunta:", re.DOTALL)
+FENCE_PATTERN = re.compile(r"```(?:sql)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
 def normalize(sql: str) -> str:
@@ -48,20 +46,37 @@ def token_f1(pred: str, gold: str) -> float:
     return 2 * precision * recall / (precision + recall)
 
 
-def sql_parses(sql: str) -> bool:
-    """Heuristic: does the SQL parse? We use SQLite's compile step."""
+def clean_sql(text: str) -> str:
+    """Keep the SQL only: the fenced block if there is one, else the first paragraph."""
+    fenced = FENCE_PATTERN.search(text)
+    if fenced:
+        return fenced.group(1).strip()
+    return text.strip().split("\n\n")[0].strip()
+
+
+def extract_schema(user_message: str) -> str:
+    match = SCHEMA_PATTERN.search(user_message)
+    if match is None:
+        raise ValueError("user message has no ### Schema block")
+    return match.group(1)
+
+
+def sql_parses(sql: str, schema: str) -> bool:
+    """Does the SQL compile against the schema? EXPLAIN resolves tables and columns."""
+    conn = sqlite3.connect(":memory:")
     try:
-        conn = sqlite3.connect(":memory:")
-        # Create dummy tables by scanning CREATE TABLE statements we embed in
-        # the training schemas — we only check syntactic validity via EXPLAIN.
-        conn.execute(f"EXPLAIN {sql.rstrip(';')}")
-        conn.close()
+        conn.executescript(schema)
+        conn.execute(f"EXPLAIN {sql.strip().rstrip(';')}")
         return True
-    except Exception:
+    except sqlite3.Error:
         return False
+    finally:
+        conn.close()
 
 
 def generate(model, tokenizer, messages: list[dict], max_new_tokens: int = 128) -> str:
+    import torch
+
     prompt = tokenizer.apply_chat_template(
         messages[:-1],  # drop the gold assistant turn
         tokenize=False,
@@ -73,25 +88,29 @@ def generate(model, tokenizer, messages: list[dict], max_new_tokens: int = 128) 
             **inputs,
             max_new_tokens=max_new_tokens,
             do_sample=False,
-            temperature=1.0,
             pad_token_id=tokenizer.pad_token_id,
         )
     text = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-    # Grab the first SQL-looking chunk
-    text = text.strip().split("\n\n")[0].strip()
-    return text
+    return clean_sql(text)
 
 
 def main():
+    # Heavy imports stay here so the metrics above can be tested without a GPU stack.
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from common import compute_dtype
+
     ap = argparse.ArgumentParser()
-    ap.add_argument("--adapter", type=str, required=True, help="Path to LoRA adapter dir")
+    ap.add_argument("--adapter", type=str, default=None, help="LoRA adapter dir; omit for baseline")
     ap.add_argument("--base_model", type=str, default="Qwen/Qwen2.5-0.5B-Instruct")
     ap.add_argument("--data", type=str, default="data/test.jsonl")
     ap.add_argument("--output", type=str, default=None)
     ap.add_argument("--limit", type=int, default=0, help="Limit N examples (0 = all)")
     args = ap.parse_args()
 
-    out_path = Path(args.output or Path(args.adapter) / "eval_results.json")
+    out_path = Path(args.output or Path(args.adapter or "runs/baseline") / "eval_results.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"[eval] Loading base model: {args.base_model}")
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
@@ -100,12 +119,13 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
-        torch_dtype=torch.bfloat16,
+        dtype=compute_dtype(),
         device_map="auto",
         trust_remote_code=True,
     )
-    print(f"[eval] Loading adapter: {args.adapter}")
-    model = PeftModel.from_pretrained(model, args.adapter)
+    if args.adapter:
+        print(f"[eval] Loading adapter: {args.adapter}")
+        model = PeftModel.from_pretrained(model, args.adapter)
     model.eval()
 
     examples = [json.loads(l) for l in open(args.data, encoding="utf-8")]
@@ -123,7 +143,7 @@ def main():
         pred = generate(model, tokenizer, ex["messages"])
         em = int(normalize(pred) == normalize(gold))
         f1 = token_f1(pred, gold)
-        parses = int(sql_parses(pred))
+        parses = int(sql_parses(pred, extract_schema(ex["messages"][-2]["content"])))
         em_hits += em
         f1_sum += f1
         parse_hits += parses

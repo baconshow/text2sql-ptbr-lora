@@ -1,14 +1,16 @@
 """
 Synthetic Text-to-SQL dataset generator (PT-BR).
 
-Generates ~3000 (schema, question, sql) triples across 4 business domains
-(e-commerce, HR, finance, healthcare), with 20+ query templates covering:
-SELECT, COUNT, SUM, AVG, MIN, MAX, GROUP BY, ORDER BY, WHERE, JOIN, LIMIT.
+Generates unique (schema, question, sql) triples across 4 business domains
+(e-commerce, HR, finance, healthcare), with 15 single-table query templates
+covering SELECT, COUNT, SUM, AVG, MIN, MAX, GROUP BY, ORDER BY, WHERE, LIMIT.
 
 Why synthetic?
 - Real Spider/WikiSQL datasets are English-only.
-- Synthetic data shows the "synthetic data curation" skill listed in the job JD.
 - We control distribution and can run ablations on dataset size.
+
+Splits are made by gold SQL: a query that appears in test never appears in
+train, even under a different wording.
 
 Usage:
     python src/data_prep.py --output data/ --n_samples 3000 --seed 42
@@ -441,19 +443,47 @@ TEMPLATES: list[Callable] = [
 ]
 
 
+MAX_ATTEMPTS_PER_SAMPLE = 50
+
+
 def generate(n_samples: int, seed: int = 42) -> list[Example]:
     rng = random.Random(seed)
     out: list[Example] = []
+    seen: set[tuple[str, str, str]] = set()
     domains = list(SCHEMAS.keys())
     attempts = 0
-    while len(out) < n_samples and attempts < n_samples * 10:
+    while len(out) < n_samples and attempts < n_samples * MAX_ATTEMPTS_PER_SAMPLE:
         attempts += 1
         domain = rng.choice(domains)
         template = rng.choice(TEMPLATES)
         ex = template(domain, rng)
-        if ex is not None:
+        if ex is None:
+            continue
+        key = (ex.domain, ex.question, ex.sql)
+        if key not in seen:
+            seen.add(key)
             out.append(ex)
     return out
+
+
+def split_by_sql(
+    examples: list[Example], val_frac: float, test_frac: float, seed: int
+) -> dict[str, list[Example]]:
+    """Split on distinct gold SQL, so no query crosses from train into val or test."""
+    groups: dict[tuple[str, str], list[Example]] = {}
+    for ex in examples:
+        groups.setdefault((ex.domain, ex.sql), []).append(ex)
+
+    keys = sorted(groups)
+    random.Random(seed).shuffle(keys)
+    n_test = int(len(keys) * test_frac)
+    n_val = int(len(keys) * val_frac)
+    parts = {
+        "test": keys[:n_test],
+        "val": keys[n_test : n_test + n_val],
+        "train": keys[n_test + n_val :],
+    }
+    return {name: [ex for key in part for ex in groups[key]] for name, part in parts.items()}
 
 
 def format_prompt(schema: str, question: str) -> str:
@@ -492,25 +522,17 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     examples = generate(args.n_samples, args.seed)
-    random.Random(args.seed).shuffle(examples)
-
-    n = len(examples)
-    n_test = int(n * args.test_frac)
-    n_val = int(n * args.val_frac)
-    n_train = n - n_val - n_test
-
-    splits = {
-        "train": examples[:n_train],
-        "val": examples[n_train : n_train + n_val],
-        "test": examples[n_train + n_val :],
-    }
+    if len(examples) < args.n_samples:
+        print(f"  only {len(examples)} unique examples for {args.n_samples} requested")
+    splits = split_by_sql(examples, args.val_frac, args.test_frac, args.seed)
 
     for name, split in splits.items():
+        random.Random(args.seed).shuffle(split)
         path = out_dir / f"{name}.jsonl"
         with path.open("w", encoding="utf-8") as f:
             for ex in split:
                 f.write(json.dumps(to_chat_message(ex), ensure_ascii=False) + "\n")
-        print(f"  {name}: {len(split):>5} → {path}")
+        print(f"  {name}: {len(split):>5} -> {path}")
 
     # Per-template distribution
     from collections import Counter

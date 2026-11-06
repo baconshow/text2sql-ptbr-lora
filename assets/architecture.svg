@@ -29,7 +29,7 @@
     <rect width="200" height="4" rx="2" fill="url(#accent)"/>
     <text x="16" y="32" fill="#f1f5f9" font-size="14" font-weight="700">1 · Synthetic Data</text>
     <text x="16" y="58" fill="#cbd5e1" font-size="12">4 domains · 15 templates</text>
-    <text x="16" y="78" fill="#cbd5e1" font-size="12">3 000 examples (train/val/test)</text>
+    <text x="16" y="78" fill="#cbd5e1" font-size="12">~900 unique examples, split by SQL</text>
     <text x="16" y="98" fill="#cbd5e1" font-size="12">JSONL · chat-format</text>
     <text x="16" y="122" fill="#64748b" font-size="11">src/data_prep.py</text>
   </g>
@@ -42,7 +42,7 @@
     <text x="16" y="58" fill="#cbd5e1" font-size="12">Qwen2.5-0.5B-Instruct</text>
     <text x="16" y="78" fill="#cbd5e1" font-size="12">4-bit NF4 · PEFT · bitsandbytes</text>
     <text x="16" y="98" fill="#cbd5e1" font-size="12">Ablations: r ∈ {8,16,32} · LR sweep</text>
-    <text x="16" y="122" fill="#64748b" font-size="11">Colab T4 · ~25 min/run</text>
+    <text x="16" y="122" fill="#64748b" font-size="11">Colab T4</text>
   </g>
 
   <!-- Stage 3: Eval -->
@@ -61,7 +61,7 @@
     <rect width="160" height="140" rx="14" fill="url(#card)" stroke="#334155"/>
     <rect width="160" height="4" rx="2" fill="url(#accent)"/>
     <text x="16" y="32" fill="#f1f5f9" font-size="14" font-weight="700">4 · Publish</text>
-    <text x="16" y="58" fill="#cbd5e1" font-size="12">🤗 HF Hub adapter</text>
+    <text x="16" y="58" fill="#cbd5e1" font-size="12">🤗 HF Hub adapter (optional)</text>
     <text x="16" y="78" fill="#cbd5e1" font-size="12">Model card</text>
     <text x="16" y="98" fill="#cbd5e1" font-size="12">Ablation report</text>
   </g>

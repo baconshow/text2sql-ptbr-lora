@@ -16,6 +16,9 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from common import compute_dtype
+from evaluate import clean_sql
+
 
 def run(base_model: str, adapter: str, schema: str, question: str) -> str:
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
@@ -23,7 +26,7 @@ def run(base_model: str, adapter: str, schema: str, question: str) -> str:
         tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
-        base_model, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True
+        base_model, dtype=compute_dtype(), device_map="auto", trust_remote_code=True
     )
     if adapter:
         model = PeftModel.from_pretrained(model, adapter)
@@ -39,7 +42,7 @@ def run(base_model: str, adapter: str, schema: str, question: str) -> str:
         out = model.generate(**inputs, max_new_tokens=128, do_sample=False,
                              pad_token_id=tokenizer.pad_token_id)
     text = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-    return text.strip().split("\n\n")[0].strip()
+    return clean_sql(text)
 
 
 def main():

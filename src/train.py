@@ -14,12 +14,14 @@ Design decisions (ablated separately, see configs/):
 Usage:
     python src/train.py --config configs/base.yaml
 
-On Colab T4 (free tier, 15GB VRAM), the base config trains in ~25 min.
+Loss is computed on the SQL answer only: prompt tokens are masked out of the
+labels. Precision follows the GPU: bf16 where it is native, fp16 on a T4.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 
@@ -31,10 +33,15 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    DataCollatorForLanguageModeling,
+    DataCollatorForSeq2Seq,
     Trainer,
     TrainingArguments,
 )
+
+from common import compute_dtype
+
+IGNORE_INDEX = -100
+MAX_LENGTH = 1024
 
 
 def load_config(path: str) -> dict:
@@ -55,7 +62,7 @@ def build_model(model_name: str, use_4bit: bool = True):
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_compute_dtype=compute_dtype(),
             bnb_4bit_use_double_quant=True,
         )
         model = AutoModelForCausalLM.from_pretrained(
@@ -68,7 +75,7 @@ def build_model(model_name: str, use_4bit: bool = True):
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.bfloat16,
+            dtype=compute_dtype(),
             device_map="auto",
             trust_remote_code=True,
         )
@@ -76,19 +83,20 @@ def build_model(model_name: str, use_4bit: bool = True):
 
 
 def format_example(example: dict, tokenizer) -> dict:
-    """Apply chat template and tokenize."""
+    """Apply chat template, tokenize, and mask the prompt out of the labels."""
     text = tokenizer.apply_chat_template(
         example["messages"],
         tokenize=False,
         add_generation_prompt=False,
     )
-    tokens = tokenizer(
-        text,
-        truncation=True,
-        max_length=1024,
-        padding=False,
+    prompt = tokenizer.apply_chat_template(
+        example["messages"][:-1],
+        tokenize=False,
+        add_generation_prompt=True,
     )
-    tokens["labels"] = tokens["input_ids"].copy()
+    tokens = tokenizer(text, truncation=True, max_length=MAX_LENGTH, padding=False)
+    prompt_len = len(tokenizer(prompt, truncation=True, max_length=MAX_LENGTH)["input_ids"])
+    tokens["labels"] = [IGNORE_INDEX] * prompt_len + tokens["input_ids"][prompt_len:]
     return tokens
 
 
@@ -137,27 +145,33 @@ def main():
     )
 
     # --- Training -----------------------------------------------------------
+    grad_accum_steps = cfg.get("grad_accum_steps", 4)
+    steps_per_epoch = math.ceil(len(tokenized["train"]) / (cfg["batch_size"] * grad_accum_steps))
+    total_steps = steps_per_epoch * cfg["num_epochs"]
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=cfg["num_epochs"],
         per_device_train_batch_size=cfg["batch_size"],
         per_device_eval_batch_size=cfg["batch_size"],
-        gradient_accumulation_steps=cfg.get("grad_accum_steps", 4),
+        gradient_accumulation_steps=grad_accum_steps,
         learning_rate=cfg["learning_rate"],
         lr_scheduler_type=cfg.get("lr_scheduler", "cosine"),
-        warmup_ratio=cfg.get("warmup_ratio", 0.03),
+        warmup_steps=int(total_steps * cfg.get("warmup_ratio", 0.03)),
         logging_steps=10,
         save_strategy="epoch",
         eval_strategy="epoch",
         save_total_limit=2,
-        bf16=True,
-        optim="paged_adamw_8bit",
+        bf16=compute_dtype() == torch.bfloat16,
+        fp16=compute_dtype() == torch.float16,
+        optim=cfg.get("optim", "paged_adamw_8bit"),
         report_to="none",
         remove_unused_columns=False,
         gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
     )
 
-    collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+    collator = DataCollatorForSeq2Seq(tokenizer, padding=True, label_pad_token_id=IGNORE_INDEX)
 
     trainer = Trainer(
         model=model,
@@ -175,6 +189,7 @@ def main():
 
     # Save metrics
     metrics = {
+        "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
         "train_loss": float(train_result.training_loss),
         "train_runtime_sec": float(train_result.metrics.get("train_runtime", 0)),
         "config": cfg,
