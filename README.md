@@ -9,14 +9,33 @@ QLoRA fine-tune of Qwen2.5-0.5B-Instruct that turns Brazilian Portuguese questio
 
 ## Results
 
-Not measured yet. `results/ablation_table.md` and `assets/loss_curves.png` appear here after the first full run of the notebook. No number in this repo comes from anywhere else.
+One notebook run on Colab, one seed, 88 test examples. Each training run took 4 to 5 minutes. The raw table is in [`results/ablation_table.md`](results/ablation_table.md).
 
-| Run | LoRA r | Target modules | LR | Trainable params |
-|---|---:|---|---:|---:|
-| `base` | 16 | attention | 2e-4 | 2.16 M |
-| `rank8` | 8 | attention | 2e-4 | 1.08 M |
-| `rank32_allmodules` | 32 | attention + MLP | 2e-4 | 17.60 M |
-| `lr_high` | 16 | attention | 5e-4 | 2.16 M |
+| Run | LoRA r | Target modules | LR | Trainable params | Exact match | Token F1 | Valid SQL |
+|---|---:|---|---:|---:|---:|---:|---:|
+| no fine-tune | - | - | - | - | 5/88 (0.057) | 0.542 | 59/88 (0.670) |
+| `base` | 16 | attention | 2e-4 | 2.16 M | 87/88 (0.989) | 0.997 | 87/88 (0.989) |
+| `rank8` | 8 | attention | 2e-4 | 1.08 M | 86/88 (0.977) | 0.994 | 88/88 (1.000) |
+| `rank32_allmodules` | 32 | attention + MLP | 2e-4 | 17.60 M | 88/88 (1.000) | 1.000 | 88/88 (1.000) |
+| `lr_high` | 16 | attention | 5e-4 | 2.16 M | 88/88 (1.000) | 1.000 | 88/88 (1.000) |
+
+How to read this:
+
+- **The fine-tune works on this task.** Without it, the model adds joins, invents columns or answers in prose. With it, the model writes the SQL shape the dataset uses.
+- **The perfect scores are not general Text-to-SQL skill.** Test queries are new, but they share templates and schemas with train, so this benchmark is easy once the model learns its format. See [Dataset](#dataset).
+- **The runs do not rank.** They differ by at most 2 of 88 examples, on one seed. That gap is too small to pick a best rank or learning rate.
+
+All three misses involve `estoque`. Train has no `MIN(estoque)`, and has `SUM(estoque)` only with `GROUP BY`:
+
+| Run | Gold | Prediction |
+|---|---|---|
+| `base` | `SELECT MIN(estoque) FROM produtos;` | `SELECT MIN(presto) FROM produtos;` |
+| `rank8` | `SELECT MIN(estoque) FROM produtos;` | `SELECT MIN(preco) FROM produtos;` |
+| `rank8` | `SELECT SUM(estoque) FROM produtos;` | `SELECT estoque FROM produtos;` |
+
+![training loss](assets/loss_curves.png)
+
+Loss falls below 0.05 within 20 steps in all four runs, which also says the task is easy to fit.
 
 ## Design
 
@@ -100,7 +119,8 @@ results/      ablation table, written by make_report
 
 ## Next
 
-- Joins and sampled schemas, to test schemas the model has not seen.
+- Joins and sampled schemas, to test schemas the model has not seen. The current test split is too easy to separate the runs.
+- More seeds, so differences between runs can mean something.
 - Execution accuracy: run the SQL on synthetic rows and compare result sets.
 
 ## License
